@@ -37,6 +37,7 @@ int m_error = 0;
 /* prototypes */
 static block *find_worst_fit(void);
 static void insert_free_list(block *ptr);
+static void local_coalesce(block* ptr);
 
 int Mem_Init(long sizeOfRegion)
 {
@@ -90,13 +91,18 @@ void *Mem_Alloc(long size)
         return NULL;
     }
     long required_size = ALIGN(size, 8);
+    if (DEBUG)
+        printf("WE need %d but we have %d\n", required_size + BLOCK_SIZE, current_worst_fit->chunck_size);
+
     if (current_worst_fit == NULL || current_worst_fit->chunck_size < required_size + BLOCK_SIZE)
     {
         m_error = E_NO_SPACE;
-        if (DEBUG) {
+        if (DEBUG)
+        {
             printf("NO SPACE LEFT\n");
-            if (current_worst_fit == NULL) printf("WOrst fit is NULL!\n");
-            printf("WE need %d but we have %d\n",required_size+BLOCK_SIZE,current_worst_fit->chunck_size);
+            if (current_worst_fit == NULL)
+                printf("WOrst fit is NULL!\n");
+            printf("WE need %d but we have %d\n", required_size + BLOCK_SIZE, current_worst_fit->chunck_size);
             Mem_Dump();
         }
         return NULL;
@@ -123,7 +129,7 @@ void *Mem_Alloc(long size)
         valid_next = true;
         //next block was malloced
         next_block = (void *)current_worst_fit + current_worst_fit->chunck_size + BLOCK_SIZE;
-        next_block->merge = (uint16_t)create_newest;
+        next_block->merge = create_newest?(uint16_t)1:(uint16_t)0;
     }
     //create new block
     if (create_newest)
@@ -199,23 +205,26 @@ int Mem_Free(void *ptr, int coalesce)
         printf("Before freeing\n");
         Mem_Dump();
     }
-
-    switch (coalesce)
-    {
-    case NO_COALESCE:
-        block_->free = 1;
+     block_->free = 1;
         //update merge next
-        uint32_t *next_block_canary = (void *)block_ + block_->chunck_size + BLOCK_SIZE + 4;
-        if (*(next_block_canary) == MAGIC_NUMBER)
+        block *next_block = (void *)block_ + block_->chunck_size + BLOCK_SIZE;
+        if (next_block->canary == MAGIC_NUMBER)
         {
-            //next block was malloced
-            void *next_block = (void *)block_ + block_->chunck_size + BLOCK_SIZE;
-            ((block *)next_block)->merge = (uint16_t)1;
+            if (DEBUG) printf("no coalesce next found!\n");
+            next_block->merge = (uint16_t)1;
         }
         //add to free list
         insert_free_list(block_);
+    switch (coalesce)
+    {
+    case NO_COALESCE:
         break;
     case LOCAL_COALESCE:
+        if (DEBUG) printf("BEFORE LOCAL COALESCE:\n");
+        Mem_Dump();
+        local_coalesce(block_);
+        if (DEBUG) printf("AFTER LOCAL COALESCE:\n");
+        Mem_Dump();
         break;
     case GLOBAL_COALESCE:
         break;
@@ -241,17 +250,18 @@ void Mem_Dump()
 
 block *find_worst_fit()
 {
-    block* target = NULL;
+    block *target = NULL;
     uint32_t max_size = 0;
     block *current = free_mem_head;
     while (current != NULL)
     {
         assert(current->free == 1);
-        if (MATH_MAX(current->chunck_size, max_size) == current->chunck_size){
-            max_size=current->chunck_size;
+        if (MATH_MAX(current->chunck_size, max_size) == current->chunck_size)
+        {
+            max_size = current->chunck_size;
             target = current;
         }
-           
+
         current = current->free_next;
     }
     return target;
@@ -263,8 +273,9 @@ void insert_free_list(block *ptr)
     block *current = ptr;
     bool prev_found = false;
     /* pointer is memory head */
-    if (ptr->footer == 0){
-         if (free_mem_head == NULL)
+    if (ptr->footer == 0)
+    {
+        if (free_mem_head == NULL)
         {
             free_mem_head = ptr;
         }
@@ -321,5 +332,26 @@ void insert_free_list(block *ptr)
             ptr->free_next = free_mem_head;
             free_mem_head = ptr;
         }
+    }
+}
+
+void local_coalesce(block* ptr){
+    block* final_next = ptr->free_next;
+    int final_size = 0;
+    int counter = 0;
+    block* prev = NULL;
+    block* current = ptr;
+    while(current != NULL && current->footer!= 0 && current->canary == MAGIC_NUMBER){
+        final_size += current->chunck_size;
+         counter++;
+         prev = current;
+         current = ((block *)((void *)current - current->footer - BLOCK_SIZE));
+    }
+    if (prev == ptr) return;
+    prev->free_next = final_next;
+    prev->chunck_size = final_size + (counter-1)*BLOCK_SIZE;
+    block* final_neighbor = ((block *)((void *)prev + prev->chunck_size + BLOCK_SIZE));
+    if (final_neighbor != NULL && final_neighbor->canary == MAGIC_NUMBER ){
+        final_neighbor->footer = prev->chunck_size;
     }
 }
