@@ -32,6 +32,7 @@ typedef struct block_t
 block *memory_head;
 block *free_mem_head;
 block *current_worst_fit;
+block *ready_fit;
 int m_error = 0;
 
 /* prototypes */
@@ -96,18 +97,21 @@ void *Mem_Alloc(long size)
 
     if (current_worst_fit == NULL || current_worst_fit->chunck_size < required_size + BLOCK_SIZE)
     {
+        current_worst_fit = find_worst_fit();
+        if (current_worst_fit->chunck_size > required_size + BLOCK_SIZE) goto START;
         m_error = E_NO_SPACE;
         if (DEBUG)
         {
             printf("NO SPACE LEFT\n");
             if (current_worst_fit == NULL)
-                printf("WOrst fit is NULL!\n");
-            printf("WE need %d but we have %d\n", required_size + BLOCK_SIZE, current_worst_fit->chunck_size);
+                printf("Worst fit is NULL!\n");
+            printf("We need %d but we have %d\n", required_size + BLOCK_SIZE, current_worst_fit->chunck_size);
             Mem_Dump();
         }
         return NULL;
     }
-    void *usr_address = (void *)current_worst_fit + BLOCK_SIZE;
+    START:;
+     void *usr_address = (void *)current_worst_fit + BLOCK_SIZE;
     if (DEBUG)
         printf("user address is %p has %d memory\n", usr_address, required_size);
     //create new block header
@@ -167,7 +171,13 @@ void *Mem_Alloc(long size)
     current_worst_fit->free_next = NULL;
     current_worst_fit->free_prev = NULL;
     //update current worst fit
-    current_worst_fit = find_worst_fit();
+    //current_worst_fit = find_worst_fit();
+    if (create_newest){
+        current_worst_fit = (void *)current_worst_fit + current_worst_fit->chunck_size + BLOCK_SIZE;
+    }
+    else{
+        current_worst_fit = find_worst_fit();
+    }
     if (DEBUG)
         printf("New worst fit is %p\n", current_worst_fit);
     if (DEBUG && current_worst_fit == NULL)
