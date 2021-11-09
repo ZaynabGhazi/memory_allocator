@@ -32,13 +32,14 @@ typedef struct block_t
 block *memory_head;
 block *free_mem_head;
 block *current_worst_fit;
-block *ready_fit;
+block* current_worst_fit_ = NULL;
 int m_error = 0;
 
 /* prototypes */
 static block *find_worst_fit(void);
 static void insert_free_list(block *ptr);
-static void local_coalesce(block* ptr);
+static void local_coalesce(block *ptr);
+static void global_coalesce(void);
 
 int Mem_Init(long sizeOfRegion)
 {
@@ -98,7 +99,8 @@ void *Mem_Alloc(long size)
     if (current_worst_fit == NULL || current_worst_fit->chunck_size < required_size + BLOCK_SIZE)
     {
         current_worst_fit = find_worst_fit();
-        if (current_worst_fit->chunck_size > required_size + BLOCK_SIZE) goto START;
+        if (current_worst_fit->chunck_size > required_size + BLOCK_SIZE)
+            goto START;
         m_error = E_NO_SPACE;
         if (DEBUG)
         {
@@ -110,8 +112,8 @@ void *Mem_Alloc(long size)
         }
         return NULL;
     }
-    START:;
-     void *usr_address = (void *)current_worst_fit + BLOCK_SIZE;
+START:;
+    void *usr_address = (void *)current_worst_fit + BLOCK_SIZE;
     if (DEBUG)
         printf("user address is %p has %d memory\n", usr_address, required_size);
     //create new block header
@@ -133,7 +135,7 @@ void *Mem_Alloc(long size)
         valid_next = true;
         //next block was malloced
         next_block = (void *)current_worst_fit + current_worst_fit->chunck_size + BLOCK_SIZE;
-        next_block->merge = create_newest?(uint16_t)1:(uint16_t)0;
+        next_block->merge = create_newest ? (uint16_t)1 : (uint16_t)0;
     }
     //create new block
     if (create_newest)
@@ -172,10 +174,12 @@ void *Mem_Alloc(long size)
     current_worst_fit->free_prev = NULL;
     //update current worst fit
     //current_worst_fit = find_worst_fit();
-    if (create_newest){
+    if (create_newest)
+    {
         current_worst_fit = (void *)current_worst_fit + current_worst_fit->chunck_size + BLOCK_SIZE;
     }
-    else{
+    else
+    {
         current_worst_fit = find_worst_fit();
     }
     if (DEBUG)
@@ -215,28 +219,38 @@ int Mem_Free(void *ptr, int coalesce)
         printf("Before freeing\n");
         Mem_Dump();
     }
-     block_->free = 1;
-        //update merge next
-        block *next_block = (void *)block_ + block_->chunck_size + BLOCK_SIZE;
-        if (next_block->canary == MAGIC_NUMBER)
-        {
-            if (DEBUG) printf("no coalesce next found!\n");
-            next_block->merge = (uint16_t)1;
-        }
-        //add to free list
-        insert_free_list(block_);
+    block_->free = 1;
+    //update merge next
+    block *next_block = (void *)block_ + block_->chunck_size + BLOCK_SIZE;
+    if (next_block->canary == MAGIC_NUMBER)
+    {
+        if (DEBUG)
+            printf("no coalesce next found!\n");
+        next_block->merge = (uint16_t)1;
+    }
+    //add to free list
+    insert_free_list(block_);
     switch (coalesce)
     {
     case NO_COALESCE:
         break;
     case LOCAL_COALESCE:
-        if (DEBUG) printf("BEFORE LOCAL COALESCE:\n");
+        if (DEBUG)
+            printf("BEFORE LOCAL COALESCE:\n");
         Mem_Dump();
         local_coalesce(block_);
-        if (DEBUG) printf("AFTER LOCAL COALESCE:\n");
+        if (DEBUG)
+            printf("AFTER LOCAL COALESCE:\n");
         Mem_Dump();
         break;
     case GLOBAL_COALESCE:
+        if (DEBUG)
+            printf("BEFORE LOCAL COALESCE:\n");
+        Mem_Dump();
+        global_coalesce();
+        if (DEBUG)
+            printf("AFTER LOCAL COALESCE:\n");
+        Mem_Dump();
         break;
     }
     if (DEBUG)
@@ -345,23 +359,48 @@ void insert_free_list(block *ptr)
     }
 }
 
-void local_coalesce(block* ptr){
-    block* final_next = ptr->free_next;
+void local_coalesce(block *ptr)
+{
+    block *final_next = ptr->free_next;
     int final_size = 0;
     int counter = 0;
-    block* prev = NULL;
-    block* current = ptr;
-    while(current != NULL && current->footer!= 0 && current->canary == MAGIC_NUMBER){
+    block *prev = NULL;
+    block *current = ptr;
+    while (current != NULL  && current->canary == MAGIC_NUMBER)
+    {
         final_size += current->chunck_size;
-         counter++;
-         prev = current;
-         current = ((block *)((void *)current - current->footer - BLOCK_SIZE));
+        counter++;
+        prev = current;
+        if (current->footer != 0 ) current = ((block *)((void *)current - current->footer - BLOCK_SIZE));
+        else current = NULL;
     }
-    if (prev == ptr) return;
+    if (prev == ptr)
+        return;
     prev->free_next = final_next;
-    prev->chunck_size = final_size + (counter-1)*BLOCK_SIZE;
-    block* final_neighbor = ((block *)((void *)prev + prev->chunck_size + BLOCK_SIZE));
-    if (final_neighbor != NULL && final_neighbor->canary == MAGIC_NUMBER ){
+    prev->chunck_size = final_size + (counter - 1) * BLOCK_SIZE;
+    block *final_neighbor = ((block *)((void *)prev + prev->chunck_size + BLOCK_SIZE));
+    if (final_neighbor != NULL && final_neighbor->canary == MAGIC_NUMBER)
+    {
         final_neighbor->footer = prev->chunck_size;
+    }
+}
+
+void global_coalesce()
+{
+    block *start = free_mem_head;
+    block* current;
+    block *farthest_prev;
+    while (start != NULL && start->canary == MAGIC_NUMBER && start->free == 1)
+    {
+        current = start;
+        farthest_prev = current;
+        while (current != NULL && current->canary == MAGIC_NUMBER && current->free == 1)
+        {
+            farthest_prev = current;
+            current = (block *)((void *)current + current->chunck_size + BLOCK_SIZE);
+        }
+        if (DEBUG) printf("Calling local coalesce on %p\n",farthest_prev);
+        local_coalesce(farthest_prev);
+        start = farthest_prev->free_next;
     }
 }
