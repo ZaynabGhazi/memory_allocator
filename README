@@ -1,0 +1,74 @@
+Author: Zaynab Ghazi
+
+How to compile: 
+     $export LD_LIBRARY_PATH=.
+     $make
+
+    
+How to run:
+   
+	Run with a Main class linking using -lmem and -L.
+
+Known bugs and limitations:
+    No bugs from what has been tested.
+
+Implementation details:
+
+    - My header is of the form:
+    typedef struct block_t
+{
+    uint32_t footer;           /* size of previous chunck in bytes*/
+    uint32_t canary;           /* magic number */
+    uint32_t chunck_size;      /* size of current chunck in bytes*/
+    uint16_t merge;            /* previous is free */
+    uint16_t free;             /* current is free */
+    struct block_t *free_prev; /* previous free chunck */
+    struct block_t *free_next; /* next free chunck */
+} block;
+
+    - I use an in-place linked list to keep track of free memory chuncks, and traverse general memory using the footer.
+    - I use a canary to identify the memory within-allocated heap.
+    - I use 4 global pointers: 2 to keep track of the heads of the memory lists, and 2 to keep track of the biggest free memory chunck (worst-fit) and the second worst-fit.
+
+    - Set DEBUG to 1 for more details. (Do not set it for large allocs as sometimes I call Mem_Dump() multiple times for DEBUG=1)
+    - MemDump only prints FREE memory chuncks.
+
+Testing:
+    - I split the test cases with Haosong as specified in the assignment description. I covered the pointer health checks and memory segmentation in simple_sanity_check. He tested the coalescing.
+    - All the test files mentioned below are on GITHUB and the tests directory.
+----------------------------------------------------------------------------------------------
+Test filename               Purpose                                                   Result
+----------------------------------------------------------------------------------------------
+
+simple_sanity_check.c      asserts: 
+                            pointers are 8-byte aligned,                             PASSES.
+                            Mem_init is called once
+                            pointers are writable
+                            the right error_codes are set.
+----------------------------------------------------------------------------------------------
+test_free_2.c               Tests partial coalescing.                                PASSES.
+----------------------------------------------------------------------------------------------
+test_free_1.c               Tests complete coalescing.                               PASSES.
+----------------------------------------------------------------------------------------------
+allocating_until            Tests running out of heap memory.                        PASSES.
+_no_more_space.c   
+----------------------------------------------------------------------------------------------
+two_mil_with                Tests 2M allocs + coalescing.                        PASSES. 0.07s
+_coalescing.c
+----------------------------------------------------------------------------------------------
+wo_mil_without              Tests 2M allocs.                                     PASSES. 0.07s
+_coalescing.c
+----------------------------------------------------------------------------------------------
+memory_writable.c           Tests pointers are writables.                             PASSES.
+----------------------------------------------------------------------------------------------
+test_free_coalesce_all.c                                                              PASSES.
+----------------------------------------------------------------------------------------------
+
+
+File directory: 
+    mem.h
+    mem.c
+    libmem.so
+    Makefile
+    tests/
+    
