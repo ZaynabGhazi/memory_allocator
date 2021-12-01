@@ -6,7 +6,7 @@
 #include <assert.h>
 #include <stdio.h>
 
-#define DEBUG 0
+#define DEBUG 1
 #define LOCAL_COALESCE 2
 #define GLOBAL_COALESCE 1
 #define NO_COALESCE 0
@@ -44,9 +44,7 @@ static void global_coalesce(void);
 int Mem_Init(long sizeOfRegion)
 {
     //duplicate call
-    if (memory_head != NULL)
-        return -1;
-    if (sizeOfRegion <= 0)
+    if (sizeOfRegion <= 0 || memory_head != NULL)
     {
         m_error = E_BAD_ARGS;
         return -1;
@@ -193,7 +191,7 @@ int Mem_Free(void *ptr, int coalesce)
     if (ptr == NULL)
     {
         m_error = E_BAD_POINTER;
-        return -1;
+        return 0;
     }
 
     if (DEBUG)
@@ -304,7 +302,7 @@ void insert_free_list(block *ptr)
     }
 
     /* middle pointer */
-    while (!prev_found)
+    while (!prev_found )
     {
         prev_block = ((block *)((void *)current - current->footer - BLOCK_SIZE));
         if (prev_block == NULL)
@@ -322,6 +320,7 @@ void insert_free_list(block *ptr)
             break;
         }
         current = prev_block;
+        if (current->footer ==0) break;
     }
     if (prev_found)
     {
@@ -357,7 +356,7 @@ void local_coalesce(block *ptr)
     int counter = 0;
     block *prev = NULL;
     block *current = ptr;
-    while (current != NULL && current->canary == MAGIC_NUMBER)
+    while (current != NULL && current->canary == MAGIC_NUMBER && current->footer !=0 )
     {
         final_size += current->chunck_size;
         counter++;
@@ -367,7 +366,7 @@ void local_coalesce(block *ptr)
         else
             current = NULL;
     }
-    if (prev == ptr)
+    if (prev == ptr || final_size==0)
         return;
     prev->free_next = final_next;
     prev->chunck_size = final_size + (counter - 1) * BLOCK_SIZE;
