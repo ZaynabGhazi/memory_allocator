@@ -34,7 +34,9 @@ block *free_mem_head;
 block *current_worst_fit;
 block *current_worst_fit_ = NULL;
 int m_error = 0;
-
+long request = 0;
+long mem_end = 0;
+long mem_start = 0;
 /* prototypes */
 static block *find_worst_fit(void);
 static void insert_free_list(block *ptr);
@@ -43,12 +45,13 @@ static void global_coalesce(void);
 
 int Mem_Init(long sizeOfRegion)
 {
-    //duplicate call
+    // duplicate call
     if (sizeOfRegion <= 0 || memory_head != NULL)
     {
         m_error = E_BAD_ARGS;
         return -1;
     }
+    request = sizeOfRegion;
     if (DEBUG)
         printf("size requested is %lu\n", sizeOfRegion);
     if (DEBUG)
@@ -60,15 +63,18 @@ int Mem_Init(long sizeOfRegion)
     total_size = ALIGN(total_size, 8);
     if (DEBUG)
         printf("size requested aligned is %d\n", (int)total_size);
-    //page-align heap size
+    // page-align heap size
     int PAGE_SIZE = getpagesize();
     int page_alignment = MATH_CEIL(total_size / (double)PAGE_SIZE) * PAGE_SIZE;
-    void *heap = mmap(NULL, page_alignment, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    void *heap = mmap(NULL, page_alignment, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_ANONYMOUS | MAP_SHARED, -1, 0);
     if (heap == MAP_FAILED)
     {
         m_error = E_BAD_ARGS;
         return -1;
     }
+    mem_start = (long)heap;
+    mem_end = ((long)(heap + page_alignment));
+
     block header = {(uint32_t)0, (uint32_t)MAGIC_NUMBER, (uint32_t)(page_alignment - BLOCK_SIZE), (uint16_t)0, (uint16_t)1, NULL, NULL};
     memory_head = (block *)heap;
     *memory_head = header;
@@ -85,6 +91,8 @@ int Mem_Init(long sizeOfRegion)
 
 void *Mem_Alloc(long size)
 {
+    if (DEBUG)
+        printf("request is %ld and size is %ld\n", request, size);
     if (size <= 0)
     {
         m_error = E_BAD_ARGS;
@@ -92,56 +100,72 @@ void *Mem_Alloc(long size)
     }
     long required_size = ALIGN(size, 8);
     if (DEBUG)
-        printf("WE need %ld but we have %d\n", required_size + BLOCK_SIZE, current_worst_fit->chunck_size);
+        printf("WE need %ld but we have %d\n", required_size, current_worst_fit->chunck_size);
 
-    if (current_worst_fit == NULL || current_worst_fit->chunck_size < required_size + BLOCK_SIZE)
+    if (current_worst_fit == NULL || required_size > request || current_worst_fit->chunck_size < required_size)
     {
+        if (DEBUG)
+        {
+            if (current_worst_fit == NULL)
+                printf("worst fit is null.\n");
+            if (required_size > request)
+                printf("size probb %ld asking %ld.\n", request, required_size);
+            if (current_worst_fit->chunck_size < required_size)
+                printf("chunck size problem.\n");
+        }
         m_error = E_NO_SPACE;
         return NULL;
     }
     void *usr_address = (void *)current_worst_fit + BLOCK_SIZE;
     if (DEBUG)
         printf("user address is %p has %ld memory\n", usr_address, required_size);
-    //create new block header
+    // create new block header
     void *newest = usr_address + required_size;
     int newest_size = current_worst_fit->chunck_size - required_size - BLOCK_SIZE;
     if (DEBUG)
         printf("newest free address is %p has %d memory\n", newest, newest_size);
-    bool create_newest = newest_size > 8;
-    //update current block
+    bool create_newest = (newest_size >= 8);
+    // update current block
     current_worst_fit->free = 0;
-    //update next's merge
+    // update next's merge
     bool valid_next = false;
     block *next_block;
-    void *next_block_canary = (void *)current_worst_fit + current_worst_fit->chunck_size + BLOCK_SIZE + 4;
-    if (*((uint32_t *)next_block_canary) == MAGIC_NUMBER)
+    void *next_block_canary = (void *)current_worst_fit + current_worst_fit->chunck_size + BLOCK_SIZE;
+    if ((long)next_block_canary > mem_start && (long)next_block_canary < mem_end)
     {
         if (DEBUG)
             printf("alloc: valid canary\n");
         valid_next = true;
-        //next block was malloced
-        next_block = (void *)current_worst_fit + current_worst_fit->chunck_size + BLOCK_SIZE;
+        // next block was malloced
+
+        next_block = ((block *)next_block_canary);
+        if (DEBUG)
+            printf("Next block updated to footer %d size %d merge %d free %d prev %p next %p\n", next_block->footer, next_block->chunck_size, next_block->merge, next_block->free, next_block->free_prev, next_block->free_next);
+
         next_block->merge = create_newest ? (uint16_t)1 : (uint16_t)0;
     }
-    //create new block
+
+    // create new block
     if (create_newest)
     {
         current_worst_fit->chunck_size = required_size;
+        // PROBLEM
         block newest_block = {(uint64_t)required_size, MAGIC_NUMBER, (uint32_t)newest_size, (uint16_t)0, (uint16_t)1, current_worst_fit->free_prev, current_worst_fit->free_next};
         *((block *)newest) = newest_block;
-        if (current_worst_fit->free_prev != NULL)
+        if (current_worst_fit->free_prev != NULL && (long)current_worst_fit->free_prev > mem_start && (long)current_worst_fit->free_prev < mem_end)
         {
-            current_worst_fit->free_prev->free_next = newest;
+            current_worst_fit->free_prev->free_next = (block *)newest;
         }
-        if (current_worst_fit->free_next != NULL)
+        if (current_worst_fit->free_next != NULL && (long)current_worst_fit->free_next > mem_start && (long)current_worst_fit->free_next < mem_end)
         {
-            current_worst_fit->free_next->free_prev = newest;
+            current_worst_fit->free_next->free_prev = (block *)newest;
         }
         if (free_mem_head == current_worst_fit)
             free_mem_head = newest;
-        //update next's footer
+        // update next's footer
         if (valid_next)
         {
+            // PROBLEM
             next_block->footer = (uint32_t)newest_block.chunck_size;
             next_block->merge = (uint16_t)1;
         }
@@ -150,7 +174,7 @@ void *Mem_Alloc(long size)
     }
     else
     {
-        //update head if needed
+        // update head if needed
         if (current_worst_fit == free_mem_head)
         {
             free_mem_head = current_worst_fit->free_next;
@@ -158,7 +182,7 @@ void *Mem_Alloc(long size)
     }
     current_worst_fit->free_next = NULL;
     current_worst_fit->free_prev = NULL;
-    //update current worst fit
+    // update current worst fit
     if (create_newest && current_worst_fit_)
     {
         block *newest = (void *)current_worst_fit + current_worst_fit->chunck_size + BLOCK_SIZE;
@@ -183,6 +207,8 @@ void *Mem_Alloc(long size)
         printf("New worst fit is %p\n", current_worst_fit);
     if (DEBUG && current_worst_fit == NULL)
         printf("New worst fit is NULL\n");
+    request -= required_size;
+
     return usr_address;
 }
 
@@ -196,7 +222,8 @@ int Mem_Free(void *ptr, int coalesce)
 
     if (DEBUG)
         printf("pointer is %p\n", ptr);
-    block *block_ = ptr - BLOCK_SIZE;
+    void *header = (char *)ptr - BLOCK_SIZE;
+    block *block_ = (block *)header;
     if (DEBUG)
         printf("pointer - 32 bytes  is %p\n", block_);
 
@@ -208,7 +235,7 @@ int Mem_Free(void *ptr, int coalesce)
         m_error = E_BAD_POINTER;
         if (DEBUG)
             printf("Free: invalid canary\n");
-        return -1;
+        return 0;
     }
     if (block_->free == (uint16_t)1)
     {
@@ -216,15 +243,14 @@ int Mem_Free(void *ptr, int coalesce)
         return -1;
     }
     block_->free = 1;
-    //update merge next
+    // update merge next
     block *next_block = (void *)block_ + block_->chunck_size + BLOCK_SIZE;
     if (next_block->canary == MAGIC_NUMBER)
     {
-        if (DEBUG)
-            printf("no coalesce next found!\n");
         next_block->merge = (uint16_t)1;
     }
-    //add to free list
+    // add to free list
+    request += block_->chunck_size;
     insert_free_list(block_);
     switch (coalesce)
     {
@@ -244,7 +270,7 @@ int Mem_Free(void *ptr, int coalesce)
         local_coalesce(block_);
         break;
     case GLOBAL_COALESCE:
-        global_coalesce();
+        // global_coalesce();
         break;
     }
     return 0;
@@ -255,8 +281,9 @@ void Mem_Dump()
     block *current = free_mem_head;
     while (current != NULL)
     {
-        assert(current->free == 1);
         printf("free pointer %p footer %d size %d merge %d free %d prev %p next %p magic number %d\n", current, current->footer, current->chunck_size, current->merge, current->free, current->free_prev, current->free_next, current->canary);
+
+        assert(current->free == 1);
         current = current->free_next;
     }
 }
@@ -276,6 +303,12 @@ block *find_worst_fit()
         }
 
         current = current->free_next;
+        if ((long)current < mem_start || (long)current > mem_end)
+        {
+            if (DEBUG)
+                printf("not my memory.\n");
+            break;
+        }
     }
     return target;
 }
@@ -302,25 +335,32 @@ void insert_free_list(block *ptr)
     }
 
     /* middle pointer */
-    while (!prev_found )
+    while (!prev_found)
     {
+        long check = ((long)((void *)current - current->footer - BLOCK_SIZE));
+        if (check < mem_start || check > mem_end)
+        {
+            if (DEBUG)
+                printf("not my memory.\n");
+            break;
+        }
         prev_block = ((block *)((void *)current - current->footer - BLOCK_SIZE));
         if (prev_block == NULL)
             break;
-        if (DEBUG)
-            printf("insert prev block updated to footer %d size %d merge %d free %d prev %p next %p\n", prev_block->footer, prev_block->chunck_size, prev_block->merge, prev_block->free, prev_block->free_prev, prev_block->free_next);
-
-        if (prev_block->canary != MAGIC_NUMBER)
+        // if (DEBUG)
+        //  printf("insert prev block updated to footer %d size %d merge %d free %d prev %p next %p\n", prev_block->footer, prev_block->chunck_size, prev_block->merge, prev_block->free, prev_block->free_prev, prev_block->free_next);
+        if (((block *)prev_block)->canary != MAGIC_NUMBER)
         {
             break;
         }
-        if (((block *)prev_block)->free)
+        if (((block *)prev_block)->free == 1)
         {
             prev_found = true;
             break;
         }
         current = prev_block;
-        if (current->footer ==0) break;
+        if (current->footer == 0)
+            break;
     }
     if (prev_found)
     {
@@ -335,7 +375,7 @@ void insert_free_list(block *ptr)
     }
     else
     {
-        //head is either NEXT or NULL
+        // head is either NEXT or NULL
         if (free_mem_head == NULL)
         {
             free_mem_head = ptr;
@@ -356,17 +396,28 @@ void local_coalesce(block *ptr)
     int counter = 0;
     block *prev = NULL;
     block *current = ptr;
-    while (current != NULL && current->canary == MAGIC_NUMBER && current->footer !=0 )
+    while (current != NULL && current->canary == MAGIC_NUMBER && current->footer != 0)
     {
         final_size += current->chunck_size;
         counter++;
         prev = current;
         if (current->footer != 0)
-            current = ((block *)((void *)current - current->footer - BLOCK_SIZE));
+        {
+            block *temp = ((block *)((void *)current - current->footer - BLOCK_SIZE));
+            long check = ((long)((void *)current - current->footer - BLOCK_SIZE));
+            if (check < mem_start || check > mem_end)
+            {
+                if (DEBUG)
+                    printf("not my memory.counter %d\n", counter);
+                break;
+            }
+            current = temp;
+        }
+
         else
             current = NULL;
     }
-    if (prev == ptr || final_size==0)
+    if (prev == ptr || final_size == 0)
         return;
     prev->free_next = final_next;
     prev->chunck_size = final_size + (counter - 1) * BLOCK_SIZE;
@@ -380,10 +431,14 @@ void local_coalesce(block *ptr)
             current_worst_fit_ = temp;
         }
     }
-    block *final_neighbor = ((block *)((void *)prev + prev->chunck_size + BLOCK_SIZE));
-    if (final_neighbor != NULL && final_neighbor->canary == MAGIC_NUMBER)
+    long check = ((long)((void *)prev + prev->chunck_size + BLOCK_SIZE));
+    if (check >= mem_start && check < mem_end)
     {
-        final_neighbor->footer = prev->chunck_size;
+        block *final_neighbor = ((block *)((void *)prev + prev->chunck_size + BLOCK_SIZE));
+        if (final_neighbor != NULL && final_neighbor->canary == MAGIC_NUMBER)
+        {
+            final_neighbor->footer = prev->chunck_size;
+        }
     }
 }
 
